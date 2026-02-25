@@ -1,0 +1,7 @@
+google-generativeai
+thefuzz
+requests
+pdfplumber
+Pillow
+google-genai
+dotenv
