@@ -16,7 +16,11 @@ load_dotenv()
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-WATCH_FOLDER = os.path.join(BASE_DIR, "input")
+# Ahora los principales están en subcarpetas de input/
+FOLDER_EGRESOS = os.path.join(BASE_DIR, "input", "EGRESOS")
+FOLDER_RECIBOS = os.path.join(BASE_DIR, "input", "RECIBOS")
+# Los soportes siguen en Data/
+DATA_FOLDER = os.path.join(BASE_DIR, "Data")
 BASE_OUTPUT = os.path.join(BASE_DIR, "output")
 
 def extraer_datos_documento_ia(ruta_archivo):
@@ -25,15 +29,15 @@ def extraer_datos_documento_ia(ruta_archivo):
     Analiza este documento contable. Determina si es un "Egreso" o un "Recibo".
     Extrae:
     1. 'tipo': "Egreso" o "Recibo"
-    2. 'nit': NIT (del tercero, ej. 901.359.144-2)
-    3. 'nombre': Nombre del cliente/proveedor.
-    4. 'documento_ref': DOCUMENTO de la tabla.
-    5. 'descripcion': Descripción del encabezado o de la transacción.
+    2. 'nit': NIT del Tercero (ej. 901.359.144-2)
+    3. 'nombre': Nombre del proveedor o tercero (ej. Blondatex, Francesca Mendoza).
+    4. 'cliente': Nombre de la empresa dueña del documento (encabezado, ej: 'Tangible Paquete Completo').
+    5. 'documento_ref': Número de DOCUMENTO de la tabla.
     6. 'monto': Si es Egreso extrae DEBITOS, si es Recibo extrae CREDITOS.
     7. 'fecha': Fecha del comprobante (YYYY-MM-DD).
 
     Responde SOLAMENTE en JSON válido con estas claves:
-    {"tipo": "...", "nit": "...", "nombre": "...", "monto": 0.0, "documento_ref": "...", "descripcion": "...", "fecha": "YYYY-MM-DD"}
+    {"tipo": "...", "nit": "...", "nombre": "...", "cliente": "...", "monto": 0.0, "documento_ref": "...", "fecha": "YYYY-MM-DD"}
     """
     try:
         imagen_o_pdf = client.files.upload(file=ruta_archivo)
@@ -49,10 +53,11 @@ def extraer_datos_documento_ia(ruta_archivo):
 def normalizar_texto(texto):
     if not texto: return ""
     texto = str(texto).lower()
+    # Eliminar S.A.S, SAS, S A S al final para nombres de carpetas más limpios
+    texto = re.sub(r'\s+s\.?a\.?s\.?$', '', texto)
     texto = ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn') # Quitar tildes
     texto = re.sub(r'[^\w\s]', '', texto) # Quitar puntuacion
-    texto = texto.replace("sas", "").replace("s a s", "").strip()
-    return texto
+    return texto.strip()
 
 def regex_nit(texto):
     if not texto: return None
@@ -65,10 +70,10 @@ def regex_nit(texto):
 def extraer_datos_documento_local(ruta_archivo, texto):
     print(f"[*] Intentando extracción LOCAL (Regex)...")
     try:
-        lines = texto.split('\n')
+        lines = [l.strip() for l in texto.split('\n') if l.strip()]
         datos = {
             "tipo": "Desconocido",
-            "descripcion": None,
+            "cliente": "Empresa",
             "fecha": None,
             "nit": None,
             "nombre": None,
@@ -77,41 +82,33 @@ def extraer_datos_documento_local(ruta_archivo, texto):
         }
 
         texto_upper = texto.upper()
-        if "COMPROBANTE DE EGRESO" in texto_upper or " COMPROBANTE DE EGRESO " in texto_upper:
+        if "COMPROBANTE DE EGRESO" in texto_upper:
             datos["tipo"] = "Egreso"
         elif "RECIBO DE CAJA" in texto_upper or "RECIBOS DE CAJA" in texto_upper:
             datos["tipo"] = "Recibo"
+
+        # Cliente: Generalmente la primera línea con texto
+        if lines:
+            datos['cliente'] = lines[0].split("NIT:")[0].strip()
+        
+        # Refinar cliente si se detecta Tangible o su NIT
+        if "901359144" in texto or "TANGIBLE" in texto_upper:
+            datos['cliente'] = "Tangible"
 
         # Fecha: DD MM YYYY
         fecha_match = re.search(r'(\d{2})\s+(\d{2})\s+(\d{4})', texto)
         if fecha_match:
             dia, mes, anio = fecha_match.groups()
             datos['fecha'] = f"{anio}-{mes}-{dia}"
-        else:
-            fecha_match_2 = re.search(r'(\d{4})[/-](\d{2})[/-](\d{2})', texto)
-            if fecha_match_2:
-                anio, mes, dia = fecha_match_2.groups()
-                datos['fecha'] = f"{anio}-{mes}-{dia}"
 
         # Datos de tabla
         for line in lines:
-            match_row = re.search(r'(\d{1,3}\.\d{3}\.\d{3}-[\w\d])\s+(.+?)\s+([A-Za-z0-9\-]+)$', line.strip())
+            match_row = re.search(r'(\d{1,3}\.\d{3}\.\d{3}-[\w\d])\s+(.+?)\s+([A-Za-z0-9\-]+)$', line)
             if match_row:
                 datos['nit'] = match_row.group(1)
                 datos['nombre'] = match_row.group(2).strip()
                 datos['documento_ref'] = match_row.group(3)
-                
-                desc_match = re.search(r'(\d{2}-\d{2}-\d{2}-?\d{0,2})\s+(.+?)\s+(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', line.strip())
-                if desc_match:
-                    desc_posible = desc_match.group(2).strip()
-                    if desc_posible and desc_posible != datos['nombre']:
-                        datos['descripcion'] = desc_posible
                 break
-                
-        # Fallback for Descripcion si no se encontro en linea
-        if not datos['descripcion']:
-            if lines:
-                datos['descripcion'] = lines[0].strip()
 
         if not datos['fecha'] or not datos['nit']:
             raise ValueError("No se pudo extraer información clave localmente.")
@@ -136,41 +133,41 @@ def obtener_texto_pdf(ruta_archivo):
         return ""
 
 def organizar_agente():
+    # Escanear principales en sus respectivas carpetas
+    principales = [] # Lista de tuplas (ruta_completa, carpeta_origen)
+    folders_to_scan = [FOLDER_EGRESOS, FOLDER_RECIBOS]
+    
+    # Si se pasa el argumento --reintentar, también escaneamos las excepciones previas
     if "--reintentar" in sys.argv:
-        print("[*] Modo Reintento activado.")
-        for folder in ["_Pendientes", "_Excepciones"]:
-            ruta = os.path.join(BASE_OUTPUT, folder)
-            if os.path.exists(ruta):
-                archivos = os.listdir(ruta)
-                if archivos:
-                    print(f"[+] Moviendo {len(archivos)} archivos de {folder} a input...")
-                    for f in archivos:
-                        shutil.move(os.path.join(ruta, f), os.path.join(WATCH_FOLDER, f))
+        exc_path = os.path.join(BASE_OUTPUT, "_Excepciones")
+        if os.path.exists(exc_path):
+            print("[*] Modo REINTENTO activo: Escaneando carpeta de excepciones...")
+            folders_to_scan.append(exc_path)
 
-    archivos = [f for f in os.listdir(WATCH_FOLDER) if os.path.isfile(os.path.join(WATCH_FOLDER, f)) and f.lower().endswith('.pdf')]
-    documentos_principales = []
-    documentos_soportes = []
-    textos_pdfs = {}
+    for folder in folders_to_scan:
+        if os.path.exists(folder):
+            for f in os.listdir(folder):
+                if f.lower().endswith('.pdf'):
+                    principales.append((os.path.join(folder, f), folder))
 
-    print("[*] Clasificando documentos...")
-    for f in archivos:
-        ruta_completa = os.path.join(WATCH_FOLDER, f)
-        texto = obtener_texto_pdf(ruta_completa)
-        textos_pdfs[f] = texto
-        
-        texto_upper = texto.upper()
-        if "COMPROBANTE DE EGRESO" in texto_upper or "RECIBOS DE CAJA" in texto_upper or "RECIBO DE CAJA" in texto_upper:
-            documentos_principales.append(f)
-        else:
-            documentos_soportes.append(f)
+    # Escanear soportes en Data
+    soportes = []
+    textos_soportes = {}
+    if os.path.exists(DATA_FOLDER):
+        for f in os.listdir(DATA_FOLDER):
+            if f.lower().endswith(('.pdf', '.jpg', '.jpeg')):
+                ruta = os.path.join(DATA_FOLDER, f)
+                soportes.append(f)
+                textos_soportes[f] = obtener_texto_pdf(ruta)
 
-    print(f"[+] {len(documentos_principales)} Principales, {len(documentos_soportes)} Soportes.")
+    print(f"[*] {len(principales)} Principales encontrados, {len(soportes)} Soportes en Data.")
 
-    for archivo_principal in documentos_principales:
-        ruta_completa = os.path.join(WATCH_FOLDER, archivo_principal)
+    for ruta_principal, folder_origen in principales:
+        archivo_nombre = os.path.basename(ruta_principal)
         try:
-            print(f"\n--- Procesando Principal: {archivo_principal} ---")
-            datos = extraer_datos_hibrido(ruta_completa, textos_pdfs[archivo_principal])
+            print(f"\n--- Procesando Principal: {archivo_nombre} ---")
+            texto_p = obtener_texto_pdf(ruta_principal)
+            datos = extraer_datos_hibrido(ruta_principal, texto_p)
             print(f"    Datos extraídos: {datos}")
             
             try:
@@ -182,48 +179,57 @@ def organizar_agente():
                      "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
             nombre_mes = meses[fecha_dt.month - 1]
             
-            # Formato Carpeta: /Contabilidad_{Mes}_{Año}/{Cliente}/{Nombre}+{ID}
-            cliente_folder = normalizar_texto(datos.get('descripcion') or datos.get('nombre') or 'Desconocido').upper()
-            nombre_proveedor = (datos.get('nombre') or 'Proveedor').replace("/", "-")
-            doc_ref = datos.get('documento_ref') or 'SinRef'
+            folder_contabilidad = f"Contabilidad_{nombre_mes}_{fecha_dt.year}"
+            folder_cliente = normalizar_texto(datos.get('cliente', 'Empresa')).capitalize()
+            folder_nombre = normalizar_texto(datos.get('nombre', 'Tercero')).capitalize()
             
-            carpeta_final = os.path.join(BASE_OUTPUT, f"Contabilidad_{nombre_mes}_{fecha_dt.year}", cliente_folder, f"{nombre_proveedor}+{doc_ref}")
+            carpeta_final = os.path.join(BASE_OUTPUT, folder_contabilidad, folder_cliente, folder_nombre)
             
             soportes_asociados = []
             nit_busqueda = regex_nit(datos.get('nit', ''))
             doc_busqueda = normalizar_texto(datos.get('documento_ref', ''))
             
-            print(f"    Buscando soportes con NIT: {nit_busqueda} o Documento: {doc_busqueda}...")
-            for soporte in list(documentos_soportes):
-                texto_soporte = textos_pdfs[soporte]
-                texto_soporte_norm = normalizar_texto(texto_soporte)
+            print(f"    Buscando soportes para '{folder_nombre}' (NIT: {nit_busqueda})...")
+            
+            # Busqueda de soportes
+            for soporte in list(soportes):
+                texto_sop = textos_soportes[soporte]
                 
                 coincide = False
-                if nit_busqueda and nit_busqueda in texto_soporte:
+                if nit_busqueda and nit_busqueda in texto_sop.replace(".", ""):
                     coincide = True
-                    print(f"      [MATCH] '{soporte}' por NIT en el texto.")
-                elif doc_busqueda and len(doc_busqueda) > 3 and doc_busqueda in texto_soporte_norm:
+                elif doc_busqueda and len(doc_busqueda) > 3 and doc_busqueda in normalizar_texto(texto_sop):
                     coincide = True
-                    print(f"      [MATCH] '{soporte}' por Referencia de Documento en el texto.")
-                    
+                
                 if coincide:
+                    print(f"      [MATCH] Soporte: {soporte}")
                     soportes_asociados.append(soporte)
-                    documentos_soportes.remove(soporte)
-            
+                    soportes.remove(soporte)
+
             os.makedirs(carpeta_final, exist_ok=True)
-            shutil.move(ruta_completa, os.path.join(carpeta_final, archivo_principal))
-            for doc in soportes_asociados:
-                ruta_soporte = os.path.join(WATCH_FOLDER, doc)
-                if os.path.exists(ruta_soporte):
-                    shutil.move(ruta_soporte, os.path.join(carpeta_final, doc))
-            print(f"[✓] Documentos organizados en: {carpeta_final}")
+            shutil.move(ruta_principal, os.path.join(carpeta_final, archivo_nombre))
+            for s in soportes_asociados:
+                shutil.move(os.path.join(DATA_FOLDER, s), os.path.join(carpeta_final, s))
+            
+            print(f"[✓] Organizado en: {carpeta_final}")
             
         except Exception as e:
-            print(f"[!] Error procesando {archivo_principal}: {e}")
-            carpeta_excepciones = os.path.join(BASE_OUTPUT, "_Excepciones")
-            os.makedirs(carpeta_excepciones, exist_ok=True)
-            if os.path.exists(ruta_completa):
-                shutil.move(ruta_completa, os.path.join(carpeta_excepciones, archivo_principal))
+            print(f"[!] Error en {archivo_nombre}: {e}")
+            # Opción 2: Mover a subcarpeta del origen
+            exc_path = os.path.join(folder_origen, "_Excepciones")
+            os.makedirs(exc_path, exist_ok=True)
+            shutil.move(ruta_principal, os.path.join(exc_path, archivo_nombre))
+
+    # Al final, mover lo que quedó en Data a subcarpeta local _Pendientes
+    if soportes:
+        print(f"\n[*] Moviendo {len(soportes)} soportes no asociados a Data/_Pendientes...")
+        pend_path = os.path.join(DATA_FOLDER, "_Pendientes")
+        os.makedirs(pend_path, exist_ok=True)
+        for s in soportes:
+            try:
+                shutil.move(os.path.join(DATA_FOLDER, s), os.path.join(pend_path, s))
+            except Exception as e:
+                print(f" [!] No se pudo mover {s}: {e}")
 
 if __name__ == "__main__":
     organizar_agente()

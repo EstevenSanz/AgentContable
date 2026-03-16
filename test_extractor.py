@@ -31,5 +31,5 @@ def extract(ruta_archivo):
     )
     return json.loads(response.text)
 
-print("558:", extract("input/00001 000000558 20260209.pdf"))
-print("559:", extract("input/00001 000000559 20260213.pdf"))
+print("Test DS406:", extract("Data/DS406.pdf"))
+print("Test TPC419:", extract("Data/TPC419.pdf"))
