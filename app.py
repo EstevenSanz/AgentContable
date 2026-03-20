@@ -9,6 +9,7 @@ from thefuzz import fuzz
 from dotenv import load_dotenv
 import sys
 import unicodedata
+from test_image import extract_text_from_image
 
 load_dotenv()
 
@@ -31,7 +32,7 @@ def extraer_datos_documento_ia(ruta_archivo):
     1. 'tipo': "Egreso" o "Recibo"
     2. 'nit': NIT del Tercero (ej. 901.359.144-2)
     3. 'nombre': Nombre del proveedor o tercero (ej. Blondatex, Francesca Mendoza).
-    4. 'cliente': Nombre de la empresa dueña del documento (encabezado, ej: 'Tangible Paquete Completo').
+    4. 'cliente': Nombre de la empresa dueña del documento (encabezado, ej: 'Tangible').
     5. 'documento_ref': Número de DOCUMENTO de la tabla.
     6. 'monto': Si es Egreso extrae DEBITOS, si es Recibo extrae CREDITOS.
     7. 'fecha': Fecha del comprobante (YYYY-MM-DD).
@@ -155,10 +156,13 @@ def organizar_agente():
     textos_soportes = {}
     if os.path.exists(DATA_FOLDER):
         for f in os.listdir(DATA_FOLDER):
-            if f.lower().endswith(('.pdf', '.jpg', '.jpeg')):
+            if f.lower().endswith('.pdf') or f.lower().endswith('.jpeg') or f.lower().endswith('.jpg') or f.lower().endswith('.png'):
                 ruta = os.path.join(DATA_FOLDER, f)
                 soportes.append(f)
-                textos_soportes[f] = obtener_texto_pdf(ruta)
+                if f.lower().endswith('.pdf'):
+                    textos_soportes[f] = obtener_texto_pdf(ruta)
+                else:
+                    textos_soportes[f] = extract_text_from_image(ruta)
 
     print(f"[*] {len(principales)} Principales encontrados, {len(soportes)} Soportes en Data.")
 
