@@ -3,6 +3,7 @@ import json
 
 # Ruta absoluta a la carpeta input del proyecto
 folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "input")
+folder_path = os.path.join(folder_path, "EGRESOS")
 extension_filter = '.pdf'
 
 output = []
