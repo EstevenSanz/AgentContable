@@ -1,130 +1,23 @@
 import os
 import re
 import shutil
-import json
-import google.genai as genai
 from datetime import datetime
-from thefuzz import fuzz
-from dotenv import load_dotenv
 import sys
 import unicodedata
 
-# --- NUEVOS IMPORTS ---
-# Usamos tus scripts para extraer correctamente
+# pyrefly: ignore [missing-import]
+# Scripts propios para extracción de texto
 from img_json import extract_text_from_image
+# pyrefly: ignore [missing-import]
 from pdf_json import extract_text_from_pdf
-
-load_dotenv()
-
-# --- CONFIGURACIÓN DE MÚLTIPLES API KEYS ---
-posibles_keys = [os.getenv("GOOGLE_API_KEY"), os.getenv("GOOGLE_API_KEY1")]
-api_keys = [k for k in posibles_keys if k and k.strip()]
+# pyrefly: ignore [missing-import]
+from thefuzz import fuzz
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FOLDER_EGRESOS = os.path.join(BASE_DIR, "input", "EGRESOS")
 FOLDER_RECIBOS = os.path.join(BASE_DIR, "input", "RECIBOS")
 DATA_FOLDER = os.path.join(BASE_DIR, "Data")
 BASE_OUTPUT = os.path.join(BASE_DIR, "output")
-
-def comprobar_relacion_ia(datos_principal, texto_soporte, nombre_soporte):
-    """Consulta a la IA (Gemini) usando pool de Keys para saber si un texto ruidoso de soporte pertenece a la transacción principal."""
-    if not texto_soporte.strip() and not nombre_soporte.strip():
-        return False
-        
-    print(f"      [*] Consultando a Gemini para relacionar soporte '{nombre_soporte}'...")
-    
-    nit = datos_principal.get('nit', 'Desconocido')
-    plantilla = datos_principal.get('plantilla', 'Desconocido')
-    nombre = datos_principal.get('nombre', 'Desconocido')
-    doc_ref = datos_principal.get('documento_ref', 'Desconocido')
-    fecha = datos_principal.get('fecha', 'Desconocido')
-    monto = datos_principal.get('monto', 0.0)
-    
-    contents = f"""<system>
-Task: Document Matching
-Input: 
-  - <ledger>: Accounting transaction metrics.
-  - <support_filename>: The filename of the support document. (Crucial metric: often contains the payee's name or transaction ID).
-  - <support_ocr>: Raw OCR text from an invoice, receipt, or transfer capture.
-Rules:
-  1. Evaluate if <support_ocr> or <support_filename> functionally validates/belongs to <ledger>.
-  2. Tolerate minor OCR string noise (e.g. '1' via 'l').
-  3. Search for intersecting amounts, dates, names (especially in <support_filename>), NIT/IDs, or references.
-Output format: ONLY "SI" or "NO"
-</system>
-
-<ledger>
-  <nit>{nit}</nit>
-  <plantilla>{plantilla}</plantilla>
-  <name>{nombre}</name>
-  <doc_ref>{doc_ref}</doc_ref>
-  <date>{fecha}</date>
-  <amount>{monto}</amount>
-</ledger>
-
-<support_filename>
-{nombre_soporte}
-</support_filename>
-
-<support_ocr>
-{texto_soporte}
-</support_ocr>
-
-<result>"""
-    
-    ultimo_error = None
-    for idx, key in enumerate(api_keys):
-        try:
-            client = genai.Client(api_key=key)
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=contents
-            )
-            respuesta = str(response.text).strip().upper()
-            return "SI" in respuesta
-        except Exception as e:
-            ultimo_error = e
-            print(f"      [!] API Key #{idx + 1} falló en relación ('{e}'). Intentando otra si existe...")
-            
-    raise Exception(f"Todas las API Keys fallaron relacionando {nombre_soporte}: {ultimo_error}")
-
-def extraer_datos_documento_ia(ruta_archivo):
-    print(f"[*] Intentando extracción con Gemini IA al archivo Principal...")
-    contents = """<system>
-Task: Structured Information Extraction from Accounting Image/PDF.
-Rules:
-  1. Detect document type context: "Egreso" (Expense) or "Recibo" (Income).
-  2. Extract parameters into strictly formatted JSON.
-  3. Return ONLY valid JSON, NO markdown wrapping (no ```json).
-</system>
-
-<schema_target>
-{
-  "tipo": "Egreso|Recibo",
-  "nit": "string (123.456.789-0)",
-  "nombre": "string (Third-party supplier/entity)",
-  "cliente": "string (Company from the document header)",
-  "monto": float (Egreso=Debitos, Recibo=Creditos),
-  "documento_ref": "string (Document No.)",
-  "fecha": "string (YYYY-MM-DD)"
-}
-</schema_target>"""
-    ultimo_error = None
-    for idx, key in enumerate(api_keys):
-        try:
-            client = genai.Client(api_key=key)
-            imagen_o_pdf = client.files.upload(file=ruta_archivo)
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[contents, imagen_o_pdf],
-                config=genai.types.GenerateContentConfig(response_mime_type="application/json")
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            ultimo_error = e
-            print(f"      [!] API Key #{idx + 1} falló en extracción principal ('{e}'). Intentando otra si existe...")
-            
-    raise Exception(f"Fallo Gemini IA con todas las keys: {ultimo_error}")
 
 def normalizar_texto(texto):
     if not texto: return ""
@@ -142,7 +35,7 @@ def regex_nit(texto):
     return None
 
 def extraer_datos_documento_local(ruta_archivo, texto):
-    print(f"[*] Intentando extracción LOCAL (Regex) de archivo Principal...")
+    print(f"[*] Extracción LOCAL (Regex) de archivo Principal...")
     try:
         lines = [l.strip() for l in texto.split('\n') if l.strip()]
         datos = {
@@ -182,14 +75,6 @@ def extraer_datos_documento_local(ruta_archivo, texto):
         return datos
     except Exception as e:
         raise Exception(f"Error analizando localmente: {e}")
-
-def extraer_datos_hibrido(ruta_archivo, texto):
-    try:
-        return extraer_datos_documento_ia(ruta_archivo)
-    except Exception as e:
-        print(f"[!] IA Error Extracción Principal: {e}")
-        print(f"[!] Cambiando a método LOCAL para archivo principal...")
-        return extraer_datos_documento_local(ruta_archivo, texto)
 
 
 def organizar_agente():
@@ -234,7 +119,7 @@ def organizar_agente():
             # Extraemos texto principal usando tu nuevo sistema pdf_json (es más robusto)
             texto_p = extract_text_from_pdf(ruta_principal)
             
-            datos = extraer_datos_hibrido(ruta_principal, texto_p)
+            datos = extraer_datos_documento_local(ruta_principal, texto_p)
             print(f"    Datos extraídos: {datos}")
             
             try:
@@ -268,14 +153,14 @@ def organizar_agente():
             
             print(f"    Buscando soportes ({len(soportes)} disp.) para '{folder_nombre}'...")
             
-            # --- NUEVA LÓGICA DE EMPAREJAMIENTO HÍBRIDO ---
+            # --- LÓGICA DE EMPAREJAMIENTO LOCAL ---
             for soporte in list(soportes):
                 texto_sop = textos_soportes[soporte]
                 coincide = False
                 
                 texto_sop_plano_numeros = texto_sop.replace(".", "").replace(",", "").replace("$", "").replace(" ", "")
                 
-                # Nivel 1: Exacto Híbrido y Nombre de Archivo
+                # Nivel 1: Coincidencia Exacta y Nombre de Archivo
                 if nit_busqueda and len(nit_busqueda) > 3 and nit_busqueda in texto_sop_plano_numeros:
                     print(f"      [MATCH] Exacto por NIT en el texto del soporte '{soporte}'")
                     coincide = True
@@ -283,35 +168,27 @@ def organizar_agente():
                     print(f"      [MATCH] Exacto por Doc. Ref en el texto del soporte '{soporte}'")
                     coincide = True
                 elif nombre_busqueda and len(nombre_busqueda) > 3 and fuzz.partial_ratio(nombre_busqueda, normalizar_texto(soporte)) >= 85:
-                    print(f"      [MATCH] Nombre de contacto '{datos.get('nombre')}' aparece detectado directamente en el nombre del archivo '{soporte}'")
+                    print(f"      [MATCH] Nombre de contacto '{datos.get('nombre')}' detectado en nombre del archivo '{soporte}'")
                     coincide = True
                 elif monto_busqueda and len(monto_busqueda) >= 4 and monto_busqueda in texto_sop_plano_numeros:
-                    print(f"      [MATCH] Monto exacto '{monto_busqueda}' detectado en el texto extraído del soporte '{soporte}'")
+                    print(f"      [MATCH] Monto exacto '{monto_busqueda}' detectado en el soporte '{soporte}'")
                     coincide = True
                 
-                # Nivel 2: IA (Tratar de buscar con IA si falló exacto)
+                # Nivel 2: Fuzzy Matching (si no hubo coincidencia exacta)
                 if not coincide:
-                    try:
-                        resp_ia = comprobar_relacion_ia(datos, texto_sop, soporte)
-                        if resp_ia:
-                            print(f"      [MATCH] Aprobado por IA (Gemini) en '{soporte}'")
-                            coincide = True
-                    except Exception as e:
-                        print(f"      [*] Fallo crítico Multi-Key en Inteligencia Artificial: Pasando a Fuzzy matching de repuesto...")
-                        # Nivel 3. Fuzzy Match (Fallback por error en APIs)
-                        fuzz_nit = fuzz.partial_ratio(nit_busqueda, texto_sop_plano_numeros) if nit_busqueda else 0
-                        fuzz_doc = fuzz.partial_ratio(doc_busqueda, normalizar_texto(texto_sop)) if doc_busqueda and len(doc_busqueda) > 3 else 0
-                        fuzz_monto = fuzz.partial_ratio(monto_busqueda, texto_sop_plano_numeros) if monto_busqueda and len(monto_busqueda) >= 4 else 0
-                        
-                        if fuzz_nit >= 80:
-                            print(f"      [MATCH] Fuzzy Matching por NIT (Score {fuzz_nit}%) en '{soporte}'")
-                            coincide = True
-                        elif fuzz_doc >= 80:
-                            print(f"      [MATCH] Fuzzy Matching por Doc. Ref (Score {fuzz_doc}%) en '{soporte}'")
-                            coincide = True
-                        elif fuzz_monto >= 95:
-                            print(f"      [MATCH] Sub-Segmento Fuzzy Matching de Monto (Score {fuzz_monto}%) en '{soporte}'")
-                            coincide = True
+                    fuzz_nit = fuzz.partial_ratio(nit_busqueda, texto_sop_plano_numeros) if nit_busqueda else 0
+                    fuzz_doc = fuzz.partial_ratio(doc_busqueda, normalizar_texto(texto_sop)) if doc_busqueda and len(doc_busqueda) > 3 else 0
+                    fuzz_monto = fuzz.partial_ratio(monto_busqueda, texto_sop_plano_numeros) if monto_busqueda and len(monto_busqueda) >= 4 else 0
+                    
+                    if fuzz_nit >= 80:
+                        print(f"      [MATCH] Fuzzy por NIT (Score {fuzz_nit}%) en '{soporte}'")
+                        coincide = True
+                    elif fuzz_doc >= 80:
+                        print(f"      [MATCH] Fuzzy por Doc. Ref (Score {fuzz_doc}%) en '{soporte}'")
+                        coincide = True
+                    elif fuzz_monto >= 95:
+                        print(f"      [MATCH] Fuzzy por Monto (Score {fuzz_monto}%) en '{soporte}'")
+                        coincide = True
                 
                 if coincide:
                     soportes_asociados.append(soporte)

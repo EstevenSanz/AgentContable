@@ -5,3 +5,5 @@ pdfplumber
 Pillow
 google-genai
 dotenv
+flask
+opencv-python-headless
